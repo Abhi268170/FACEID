@@ -21,11 +21,11 @@ app.use(express.static(path.join(__dirname, '../client')));
 // MySQL Database Setup
 // ----------------------
 const dbConfig = {
-  host: 'localhost',
-  user: 'root',         // Change if needed
-  password: 'your_password', // Change if needed
-  database: 'face_db',  // Ensure this DB exists
-  socketPath: '/var/run/mysqld/mysqld.sock' // Uncomment/adjust if needed
+  host: "localhost",
+  user: "root",
+  password: "Abhi@123",
+  database: "face_db",
+  socketPath: '/var/run/mysqld/mysqld.sock'
 };
 
 const connection = mysql.createConnection(dbConfig);
@@ -82,22 +82,45 @@ app.post('/register', (req, res) => {
     return res.status(400).json({ message: "Missing required fields (name, embedding, image)." });
   }
 
-  // Convert base64 image to Buffer for storage as BLOB
-  const imageData = image.replace(/^data:image\/\w+;base64,/, "");
-  const imageBuffer = Buffer.from(imageData, 'base64');
-
-  // Store embedding as JSON string
-  const embeddingJson = JSON.stringify(embedding);
-
-  // Insert into MySQL
-  const insertQuery = 'INSERT INTO users (name, embedding, image) VALUES (?, ?, ?)';
-  connection.query(insertQuery, [name, embeddingJson, imageBuffer], (err, results) => {
+  // First, check for duplicate registrations (i.e. if a similar face is already registered)
+  const selectQuery = 'SELECT * FROM users';
+  connection.query(selectQuery, (err, results) => {
     if (err) {
-      console.error("Error inserting registration:", err);
+      console.error("Error fetching registrations:", err);
       return res.status(500).json({ message: "Database error on registration." });
     }
-    console.log(`Registered: ${name} (ID: ${results.insertId})`);
-    return res.json({ message: "Registration successful." });
+
+    // Use a high threshold for duplicate detection (adjust as needed)
+    let duplicateFound = false;
+    results.forEach(row => {
+      const storedEmbedding = JSON.parse(row.embedding);
+      const similarity = cosineSimilarity(embedding, storedEmbedding);
+      console.log(`Comparing with ${row.name}: similarity=${similarity.toFixed(3)}`);
+      if (similarity >= 0.98) {
+        duplicateFound = true;
+      }
+    });
+    if (duplicateFound) {
+      return res.status(400).json({ message: "Face already registered." });
+    }
+
+    // Convert base64 image to Buffer for storage as BLOB
+    const imageData = image.replace(/^data:image\/\w+;base64,/, "");
+    const imageBuffer = Buffer.from(imageData, 'base64');
+
+    // Store embedding as JSON string
+    const embeddingJson = JSON.stringify(embedding);
+
+    // Insert new registration into MySQL
+    const insertQuery = 'INSERT INTO users (name, embedding, image) VALUES (?, ?, ?)';
+    connection.query(insertQuery, [name, embeddingJson, imageBuffer], (err, results) => {
+      if (err) {
+        console.error("Error inserting registration:", err);
+        return res.status(500).json({ message: "Database error on registration." });
+      }
+      console.log(`Registered: ${name} (ID: ${results.insertId})`);
+      return res.json({ message: "Registration successful." });
+    });
   });
 });
 
@@ -130,14 +153,15 @@ app.post('/match', (req, res) => {
       // Parse the stored embedding (JSON) back to an array
       const storedEmbedding = JSON.parse(row.embedding);
       const similarity = cosineSimilarity(embedding, storedEmbedding);
+      console.log(`Matching against ${row.name}: similarity=${similarity.toFixed(3)}`);
       if (similarity > bestSimilarity) {
         bestSimilarity = similarity;
         bestMatch = row;
       }
     });
 
-    // Threshold for deciding a match
-    const threshold = 0.8;
+    // Apply a tighter threshold to reduce false positives (e.g., 0.98)
+    const threshold = 0.97;
     if (bestSimilarity >= threshold && bestMatch) {
       // Convert the LONGBLOB image back to base64
       const imageBase64 = "data:image/png;base64," + bestMatch.image.toString('base64');
